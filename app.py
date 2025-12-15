@@ -1,13 +1,15 @@
 import streamlit as st
 import FinanceDataReader as fdr
 import pandas as pd
+import numpy as np
 import plotly.graph_objects as go
+from plotly.subplots import make_subplots
 from datetime import datetime
 
 # -----------------------------------------------------------------------------
-# 1. 페이지 설정 및 디자인
+# 1. 페이지 설정
 # -----------------------------------------------------------------------------
-st.set_page_config(page_title="세력선 추적기", layout="wide")
+st.set_page_config(page_title="세력선 & 보조지표 분석기", layout="wide")
 
 st.markdown("""
 <style>
@@ -16,132 +18,208 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-st.title("🕵️‍♀️ 주가 세력선(이평선) 추적기")
-st.markdown("급등했거나 추세가 좋았던 종목들이 **어떤 이동평균선을 밟고 올라갔는지** 디테일하게 역추적합니다.")
-st.markdown("---")
+st.title("🕵️‍♀️ 주가 심층 분석기 (세력선 + 보조지표)")
+st.markdown("최적의 **이동평균선(세력선)**을 찾고, **일목균형표/볼린저밴드/OBV**를 통해 세력의 움직임을 입체적으로 분석합니다.")
 
 # -----------------------------------------------------------------------------
-# 2. 사이드바 (사용자 입력)
+# 2. 사이드바 설정
 # -----------------------------------------------------------------------------
 with st.sidebar:
     st.header("🔍 분석 설정")
     
-    # 종목코드 입력 (기본값: 삼성전자 005930 예시로 변경, 원하시는 걸로 바꾸셔도 됩니다)
-    stock_code = st.text_input("종목코드 (예: 005930)", value="005930")
-    
-    # 날짜 입력 (기본값: 2020년 1월 1일 ~ 오늘 날짜)
-    # datetime.now()를 사용하여 접속한 '오늘'이 자동으로 찍히게 설정했습니다.
+    # 종목 & 기간
+    stock_code = st.text_input("종목코드", value="005930")
     start_date = st.date_input("시작일", datetime(2020, 1, 1))
     end_date = st.date_input("종료일", datetime.now())
     
     st.markdown("---")
-    st.subheader("이평선 테스트 범위")
-    st.write("설정된 범위 내의 모든 이평선을 대입해서 가장 잘 맞는 선을 찾습니다.")
-    min_ma = st.number_input("최소 이평선", value=3, min_value=1)
-    max_ma = st.number_input("최대 이평선", value=60, min_value=10)
+    st.header("🛠 지표 설정")
     
-    run_btn = st.button("🚀 분석 시작", type="primary")
+    # 1) 이평선 찾기 설정
+    st.subheader("1. 세력선(Best 이평선) 찾기")
+    min_ma = st.number_input("최소 범위", value=3)
+    max_ma = st.number_input("최대 범위", value=60)
+    
+    # 2) 보조지표 선택
+    st.subheader("2. 차트에 표시할 지표")
+    show_bollinger = st.checkbox("볼린저밴드 (변동성/지지저항)", value=True)
+    show_ichimoku = st.checkbox("일목균형표 (구름대/추세)", value=False)
+    show_obv = st.checkbox("OBV (거래량 매집 추적)", value=True)
+
+    st.markdown("---")
+    run_btn = st.button("🚀 종합 분석 시작", type="primary")
 
 # -----------------------------------------------------------------------------
-# 3. 분석 로직 (버튼 클릭 시 실행)
+# 3. 데이터 계산 함수들
+# -----------------------------------------------------------------------------
+
+# 볼린저밴드 계산
+def calculate_bollinger(df, window=20, num_std=2):
+    df['BB_Mid'] = df['Close'].rolling(window=window).mean()
+    df['BB_Std'] = df['Close'].rolling(window=window).std()
+    df['BB_Upper'] = df['BB_Mid'] + (df['BB_Std'] * num_std)
+    df['BB_Lower'] = df['BB_Mid'] - (df['BB_Std'] * num_std)
+    return df
+
+# 일목균형표 계산
+def calculate_ichimoku(df):
+    # 전환선 (9일)
+    high_9 = df['High'].rolling(window=9).max()
+    low_9 = df['Low'].rolling(window=9).min()
+    df['Ichi_Tenkan'] = (high_9 + low_9) / 2
+
+    # 기준선 (26일)
+    high_26 = df['High'].rolling(window=26).max()
+    low_26 = df['Low'].rolling(window=26).min()
+    df['Ichi_Kijun'] = (high_26 + low_26) / 2
+
+    # 선행스팬 A (26일 앞)
+    df['Ichi_SpanA'] = ((df['Ichi_Tenkan'] + df['Ichi_Kijun']) / 2).shift(26)
+
+    # 선행스팬 B (52일 고저평균 -> 26일 앞)
+    high_52 = df['High'].rolling(window=52).max()
+    low_52 = df['Low'].rolling(window=52).min()
+    df['Ichi_SpanB'] = ((high_52 + low_52) / 2).shift(26)
+    
+    # 후행스팬 (현재 종가를 26일 뒤로) - 차트 표시는 생략하거나 필요시 추가
+    return df
+
+# OBV 계산
+def calculate_obv(df):
+    # OBV = 이전 OBV + (만약 상승시 거래량) - (만약 하락시 거래량)
+    # numpy where를 써서 한번에 계산
+    direction = np.where(df['Close'] > df['Close'].shift(1), 1, 
+                np.where(df['Close'] < df['Close'].shift(1), -1, 0))
+    df['OBV'] = (direction * df['Volume']).cumsum()
+    return df
+
+# -----------------------------------------------------------------------------
+# 4. 메인 로직
 # -----------------------------------------------------------------------------
 if run_btn:
-    with st.spinner(f"Code '{stock_code}' 데이터를 분석 중입니다..."):
-        
-        # (1) 데이터 수집
+    with st.spinner('데이터 수집 및 지표 계산 중...'):
         try:
             df = fdr.DataReader(stock_code, start_date, end_date)
         except Exception as e:
-            st.error(f"데이터를 가져오는데 실패했습니다: {e}")
+            st.error(f"에러 발생: {e}")
             df = pd.DataFrame()
 
         if df.empty:
-            st.error("해당 기간의 데이터가 없습니다. 날짜나 종목코드를 확인해주세요.")
+            st.error("데이터가 없습니다.")
         else:
-            # (2) 백테스팅: 모든 이평선 계산 및 점수 매기기
-            scores = {} # {이평선일수: 지지성공횟수}
+            # --- [1] 지표 계산 ---
+            # (A) 볼린저밴드
+            if show_bollinger:
+                df = calculate_bollinger(df)
             
-            # 진행률 표시바
-            progress_bar = st.progress(0)
-            total_steps = max_ma - min_ma + 1
-            step_count = 0
+            # (B) 일목균형표
+            if show_ichimoku:
+                df = calculate_ichimoku(df)
+            
+            # (C) OBV
+            if show_obv:
+                df = calculate_obv(df)
 
+            # (D) Best 이평선 찾기 (기존 로직)
+            scores = {}
             for ma in range(min_ma, max_ma + 1):
-                col_name = f'MA_{ma}'
-                # 이평선 계산
-                df[col_name] = df['Close'].rolling(window=ma).mean()
+                col = f'MA_{ma}'
+                df[col] = df['Close'].rolling(window=ma).mean()
                 
                 # 지지력 테스트
-                # 조건: 저가(Low)가 이평선을 살짝 건드리고(-2% ~ +1%), 종가(Close)는 이평선 위에 안착했는가?
-                support_count = 0
-                
+                count = 0
                 for idx, row in df.iterrows():
-                    if pd.isna(row[col_name]): continue
-                    
-                    ma_val = row[col_name]
-                    low_val = row['Low']
-                    close_val = row['Close']
-                    
-                    # 지지 판단 범위 (이평선 기준 -2% ~ +1% 사이까지 내려왔다가)
-                    lower_bound = ma_val * 0.98
-                    upper_bound = ma_val * 1.01
-                    
-                    if lower_bound <= low_val <= upper_bound:
-                        # 종가는 이평선보다 높거나 같게 마감 (지지에 성공)
-                        if close_val >= ma_val:
-                            support_count += 1
-                
-                scores[ma] = support_count
-                
-                # 진행률 업데이트
-                step_count += 1
-                progress_bar.progress(step_count / total_steps)
-
-            # (3) 결과 도출: 1등 이평선 찾기
-            sorted_scores = sorted(scores.items(), key=lambda item: item[1], reverse=True)
-            best_ma = sorted_scores[0][0]     # 1등 이평선
-            best_count = sorted_scores[0][1]  # 지지 횟수
-
-            # -------------------------------------------------------------------------
-            # 4. 결과 화면 출력
-            # -------------------------------------------------------------------------
-            st.success("분석 완료!")
+                    if pd.isna(row[col]): continue
+                    if (row[col]*0.98 <= row['Low'] <= row[col]*1.01) and (row['Close'] >= row[col]):
+                        count += 1
+                scores[ma] = count
             
-            col1, col2 = st.columns([1, 2])
+            sorted_scores = sorted(scores.items(), key=lambda x: x[1], reverse=True)
+            best_ma = sorted_scores[0][0]
+            best_count = sorted_scores[0][1]
+
+
+            # --- [2] 결과 시각화 (Subplots 사용) ---
+            
+            # OBV를 켰으면 2줄짜리 차트, 아니면 1줄짜리 차트
+            if show_obv:
+                fig = make_subplots(rows=2, cols=1, shared_xaxes=True, 
+                                    vertical_spacing=0.05, row_heights=[0.7, 0.3],
+                                    subplot_titles=(f"주가 및 지표 ({best_ma}일선)", "OBV (매집 강도)"))
+            else:
+                fig = make_subplots(rows=1, cols=1, subplot_titles=(f"주가 및 지표 ({best_ma}일선)",))
+
+            # 1. 캔들 차트 (Row 1)
+            fig.add_trace(go.Candlestick(x=df.index,
+                            open=df['Open'], high=df['High'],
+                            low=df['Low'], close=df['Close'],
+                            name='주가'), row=1, col=1)
+
+            # 2. Best 이평선 (Row 1)
+            fig.add_trace(go.Scatter(x=df.index, y=df[f'MA_{best_ma}'], 
+                                     line=dict(color='black', width=2), 
+                                     name=f'🏆 세력선 ({best_ma}일)'), row=1, col=1)
+
+            # 3. 볼린저밴드 (Row 1)
+            if show_bollinger:
+                # 상단선
+                fig.add_trace(go.Scatter(x=df.index, y=df['BB_Upper'],
+                                         line=dict(color='rgba(0,0,255,0.2)', width=1),
+                                         name='볼린저 상단'), row=1, col=1)
+                # 하단선
+                fig.add_trace(go.Scatter(x=df.index, y=df['BB_Lower'],
+                                         line=dict(color='rgba(0,0,255,0.2)', width=1),
+                                         fill='tonexty', # 상단선과 하단선 사이 채우기
+                                         fillcolor='rgba(0,0,255,0.05)',
+                                         name='볼린저 하단'), row=1, col=1)
+
+            # 4. 일목균형표 (Row 1)
+            if show_ichimoku:
+                # 구름대 (Span A, Span B)
+                fig.add_trace(go.Scatter(x=df.index, y=df['Ichi_SpanA'],
+                                         line=dict(color='rgba(0, 255, 0, 0.3)', width=0),
+                                         name='선행스팬1'), row=1, col=1)
+                fig.add_trace(go.Scatter(x=df.index, y=df['Ichi_SpanB'],
+                                         line=dict(color='rgba(255, 0, 0, 0.3)', width=0),
+                                         fill='tonexty', # 구름대 채우기
+                                         fillcolor='rgba(0, 128, 0, 0.1)',
+                                         name='선행스팬2(구름대)'), row=1, col=1)
+                # 기준선
+                fig.add_trace(go.Scatter(x=df.index, y=df['Ichi_Kijun'],
+                                         line=dict(color='gray', width=1.5, dash='dash'),
+                                         name='일목 기준선'), row=1, col=1)
+
+            # 5. OBV 차트 (Row 2) - 선택했을 경우에만
+            if show_obv:
+                fig.add_trace(go.Scatter(x=df.index, y=df['OBV'],
+                                         line=dict(color='purple', width=2),
+                                         name='OBV'), row=2, col=1)
+
+            # 레이아웃 설정
+            fig.update_layout(height=800, xaxis_rangeslider_visible=False)
+            
+            # 화면 출력
+            col1, col2 = st.columns([1, 3])
             
             with col1:
+                st.success(f"분석 완료!")
                 st.markdown(f"""
                 <div class='highlight'>
-                    <h3>🏆 발견된 최적의 선</h3>
+                    <h3>🏆 최적의 세력선</h3>
                     <h1 style='color: #ff4b4b; margin:0;'>{best_ma}일선</h1>
-                    <p>이 기간 동안 총 <b>{best_count}번</b>의 지지를 보여주었습니다.</p>
-                    <p>해당 종목은 20일선보다 <b>{best_ma}일선</b>을 추종했을 가능성이 있습니다.</p>
+                    <p>지지 횟수: <b>{best_count}회</b></p>
                 </div>
                 """, unsafe_allow_html=True)
                 
-                st.write("#### 📊 이평선 지지력 순위 (Top 5)")
-                rank_df = pd.DataFrame(sorted_scores, columns=['이평선(일)', '지지 성공 횟수']).head(5)
-                st.dataframe(rank_df, hide_index=True)
+                st.write("---")
+                st.write("**지표 해석 팁:**")
+                if show_obv:
+                    st.info("**OBV(보라색):** 주가는 횡보하거나 떨어지는데 OBV가 계속 올라간다면? **'매집'** 신호일 수 있습니다.")
+                if show_bollinger:
+                    st.info("**볼린저밴드:** 폭이 좁아지는 '개미허리' 구간 이후에 시세 분출이 자주 일어납니다.")
+                if show_ichimoku:
+                    st.info("**일목균형표:** 주가가 구름대(음영) 위에 있으면 '상승 추세', 아래에 있으면 '하락 추세'로 봅니다.")
 
             with col2:
-                # 차트 그리기
-                st.subheader(f"📈 {stock_code} 주가와 {best_ma}일선 흐름")
-                
-                fig = go.Figure()
-
-                # 캔들 차트
-                fig.add_trace(go.Candlestick(x=df.index,
-                                open=df['Open'], high=df['High'],
-                                low=df['Low'], close=df['Close'],
-                                name='주가',
-                                increasing_line_color='red', decreasing_line_color='blue'))
-
-                # 베스트 이평선
-                fig.add_trace(go.Scatter(x=df.index, y=df[f'MA_{best_ma}'], 
-                                        line=dict(color='black', width=2), 
-                                        name=f'추세선 ({best_ma}일)'))
-
-                fig.update_layout(height=500, xaxis_rangeslider_visible=False)
                 st.plotly_chart(fig, use_container_width=True)
-                
-            st.info(f"💡 팁: 차트의 특정 부분을 드래그하면 확대해서 '{best_ma}일선'을 타고 가는지 자세히 볼 수 있습니다.")
+
