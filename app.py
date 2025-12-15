@@ -7,7 +7,7 @@ from datetime import datetime
 # -----------------------------------------------------------------------------
 # 1. 페이지 설정 및 디자인
 # -----------------------------------------------------------------------------
-st.set_page_config(page_title="작전주 세력선 추적기", layout="wide")
+st.set_page_config(page_title="세력선 추적기", layout="wide")
 
 st.markdown("""
 <style>
@@ -16,8 +16,8 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-st.title("🕵️‍♀️ 작전주 비밀 세력선(이평선) 추적기")
-st.markdown("과거 급등주(작전주)들이 **어떤 이동평균선을 밟고 올라갔는지** 디테일하게 역추적합니다.")
+st.title("🕵️‍♀️ 주가 세력선(이평선) 추적기")
+st.markdown("급등했거나 추세가 좋았던 종목들이 **어떤 이동평균선을 밟고 올라갔는지** 디테일하게 역추적합니다.")
 st.markdown("---")
 
 # -----------------------------------------------------------------------------
@@ -26,26 +26,27 @@ st.markdown("---")
 with st.sidebar:
     st.header("🔍 분석 설정")
     
-    # 종목코드 입력 (기본값: 이화공영 001840)
-    stock_code = st.text_input("종목코드 (예: 001840)", value="001840")
+    # 종목코드 입력 (기본값: 삼성전자 005930 예시로 변경, 원하시는 걸로 바꾸셔도 됩니다)
+    stock_code = st.text_input("종목코드 (예: 005930)", value="005930")
     
-    # 날짜 입력 (기본값: 2007년 이화공영 대시세 구간)
-    start_date = st.date_input("시작일", datetime(2007, 1, 1))
-    end_date = st.date_input("종료일", datetime(2007, 12, 31))
+    # 날짜 입력 (기본값: 2020년 1월 1일 ~ 오늘 날짜)
+    # datetime.now()를 사용하여 접속한 '오늘'이 자동으로 찍히게 설정했습니다.
+    start_date = st.date_input("시작일", datetime(2020, 1, 1))
+    end_date = st.date_input("종료일", datetime.now())
     
     st.markdown("---")
     st.subheader("이평선 테스트 범위")
-    st.write("3일선부터 60일선까지 전부 대입해서 가장 잘 맞는 선을 찾습니다.")
+    st.write("설정된 범위 내의 모든 이평선을 대입해서 가장 잘 맞는 선을 찾습니다.")
     min_ma = st.number_input("최소 이평선", value=3, min_value=1)
     max_ma = st.number_input("최대 이평선", value=60, min_value=10)
     
-    run_btn = st.button("🚀 세력선 분석 시작", type="primary")
+    run_btn = st.button("🚀 분석 시작", type="primary")
 
 # -----------------------------------------------------------------------------
 # 3. 분석 로직 (버튼 클릭 시 실행)
 # -----------------------------------------------------------------------------
 if run_btn:
-    with st.spinner(f"'{stock_code}'의 과거 데이터를 샅샅이 뒤지는 중입니다..."):
+    with st.spinner(f"Code '{stock_code}' 데이터를 분석 중입니다..."):
         
         # (1) 데이터 수집
         try:
@@ -70,7 +71,7 @@ if run_btn:
                 # 이평선 계산
                 df[col_name] = df['Close'].rolling(window=ma).mean()
                 
-                # 지지력 테스트 (매우 정교한 로직)
+                # 지지력 테스트
                 # 조건: 저가(Low)가 이평선을 살짝 건드리고(-2% ~ +1%), 종가(Close)는 이평선 위에 안착했는가?
                 support_count = 0
                 
@@ -98,7 +99,7 @@ if run_btn:
 
             # (3) 결과 도출: 1등 이평선 찾기
             sorted_scores = sorted(scores.items(), key=lambda item: item[1], reverse=True)
-            best_ma = sorted_scores[0][0]     # 1등 이평선 (예: 13일)
+            best_ma = sorted_scores[0][0]     # 1등 이평선
             best_count = sorted_scores[0][1]  # 지지 횟수
 
             # -------------------------------------------------------------------------
@@ -111,14 +112,14 @@ if run_btn:
             with col1:
                 st.markdown(f"""
                 <div class='highlight'>
-                    <h3>🏆 발견된 세력선</h3>
+                    <h3>🏆 발견된 최적의 선</h3>
                     <h1 style='color: #ff4b4b; margin:0;'>{best_ma}일선</h1>
-                    <p>이 기간 동안 총 <b>{best_count}번</b>의 완벽한 지지를 보여주었습니다.</p>
-                    <p>세력들이 20일선 대신 <b>{best_ma}일선</b>을 보고 운전했을 가능성이 높습니다.</p>
+                    <p>이 기간 동안 총 <b>{best_count}번</b>의 지지를 보여주었습니다.</p>
+                    <p>해당 종목은 20일선보다 <b>{best_ma}일선</b>을 추종했을 가능성이 있습니다.</p>
                 </div>
                 """, unsafe_allow_html=True)
                 
-                st.write("#### 📊 이평선 순위 (Top 5)")
+                st.write("#### 📊 이평선 지지력 순위 (Top 5)")
                 rank_df = pd.DataFrame(sorted_scores, columns=['이평선(일)', '지지 성공 횟수']).head(5)
                 st.dataframe(rank_df, hide_index=True)
 
@@ -133,15 +134,14 @@ if run_btn:
                                 open=df['Open'], high=df['High'],
                                 low=df['Low'], close=df['Close'],
                                 name='주가',
-                                increasing_line_color='red', decreasing_line_color='blue')) # 한국식 컬러
+                                increasing_line_color='red', decreasing_line_color='blue'))
 
                 # 베스트 이평선
                 fig.add_trace(go.Scatter(x=df.index, y=df[f'MA_{best_ma}'], 
                                         line=dict(color='black', width=2), 
-                                        name=f'세력선 ({best_ma}일)'))
+                                        name=f'추세선 ({best_ma}일)'))
 
                 fig.update_layout(height=500, xaxis_rangeslider_visible=False)
                 st.plotly_chart(fig, use_container_width=True)
                 
             st.info(f"💡 팁: 차트의 특정 부분을 드래그하면 확대해서 '{best_ma}일선'을 타고 가는지 자세히 볼 수 있습니다.")
-
